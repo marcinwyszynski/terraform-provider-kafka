@@ -1,21 +1,14 @@
 package topic
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/Shopify/sarama"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
 )
-
-type threadsafeClient struct {
-	sarama.Client
-	*sync.Mutex
-}
 
 // Provider returns the actual provider instance.
 func Provider() terraform.ResourceProvider {
@@ -88,12 +81,7 @@ func configure(d *schema.ResourceData) (interface{}, error) {
 
 	log.Printf("[INFO] Initializing Kafka client with hosts: %v\n", hosts)
 
-	client, err := sarama.NewClient(hosts, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kafka client: %s", err)
-	}
-
-	return &threadsafeClient{client, new(sync.Mutex)}, nil
+	return newClient(hosts, cfg)
 }
 
 func getHosts() ([]string, error) {

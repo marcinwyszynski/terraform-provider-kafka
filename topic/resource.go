@@ -6,6 +6,7 @@ import (
 
 	"github.com/Shopify/sarama"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/pkg/errors"
 )
 
 func resource() *schema.Resource {
@@ -216,19 +217,24 @@ func importTopic(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceDa
 
 func client(meta interface{}) (*sarama.Broker, error) {
 	client := meta.(*threadsafeClient)
+	if err := client.ensureConnected(); err != nil {
+		errors.Wrap(err, "could not ensure that the client was connected")
+	}
+
 	client.Lock()
 	defer client.Unlock()
+
 	controller, err := client.Controller()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "could not get controller")
 	}
 	if ok, err := controller.Connected(); err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "could not check if the controller is connected")
 	} else if ok {
 		return controller, nil
 	}
 	if err = controller.Open(client.Config()); err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "could not open controller connection")
 	}
 	return controller, nil
 }
