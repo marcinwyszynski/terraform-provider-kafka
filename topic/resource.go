@@ -180,8 +180,16 @@ func read(d *schema.ResourceData, meta interface{}) error {
 	topic := metadata.Topics[0]
 
 	d.Set("name", topic.Name)
-	d.Set("num_partitions", len(topic.Partitions))
-	d.Set("replication_factor", len(topic.Partitions[0].Replicas)) // this work?
+
+	numPartitions := len(topic.Partitions)
+	d.Set("num_partitions", numPartitions)
+
+	replicationFactor := 0
+	if numPartitions > 0 {
+		replicationFactor = len(topic.Partitions[0].Replicas)
+	}
+
+	d.Set("replication_factor", replicationFactor)
 
 	if old, ok := d.GetOk("config_entries"); ok {
 		read, err := configs(broker, topic.Name)
