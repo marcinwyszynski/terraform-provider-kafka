@@ -21,8 +21,15 @@ func (f *clientFactory) build() (sarama.Client, *sarama.Broker, error) {
 		return nil, nil, errors.Wrap(err, "could not get controller")
 	}
 
-	if err := controller.Open(client.Config()); err != nil {
-		return nil, nil, errors.Wrap(err, "could not open controller connection")
+	connected, err := controller.Connected()
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "could not check controller connectedness")
+	}
+
+	if !connected {
+		if err := controller.Open(client.Config()); err != nil {
+			return nil, nil, errors.Wrap(err, "could not open controller connection")
+		}
 	}
 
 	return client, controller, nil
