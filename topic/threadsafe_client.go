@@ -29,7 +29,7 @@ func (t *threadsafeClient) ensureConnected() error {
 	t.Lock()
 	defer t.Unlock()
 
-	if !t.Closed() {
+	if t.Client != nil && !t.Closed() {
 		return nil
 	}
 
