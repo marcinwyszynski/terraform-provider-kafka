@@ -81,7 +81,7 @@ func configure(d *schema.ResourceData) (interface{}, error) {
 
 	log.Printf("[INFO] Initializing Kafka client with hosts: %v\n", hosts)
 
-	return newClient(hosts, cfg)
+	return &clientFactory{config: cfg, hosts: hosts}, nil
 }
 
 func getHosts() ([]string, error) {

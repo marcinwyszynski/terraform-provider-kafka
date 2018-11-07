@@ -47,10 +47,12 @@ func resource() *schema.Resource {
 }
 
 func create(d *schema.ResourceData, meta interface{}) error {
-	c, err := client(meta)
+	client, broker, err := meta.(*clientFactory).build()
 	if err != nil {
 		return err
 	}
+	defer broker.Close()
+	defer client.Close()
 
 	topic := d.Get("name").(string)
 
@@ -69,13 +71,17 @@ func create(d *schema.ResourceData, meta interface{}) error {
 	topicDetails := make(map[string]*sarama.TopicDetail)
 	topicDetails[topic] = topicDetail
 
-	response, err := c.CreateTopics(&sarama.CreateTopicsRequest{
+	response, err := broker.CreateTopics(&sarama.CreateTopicsRequest{
 		TopicDetails: topicDetails,
 		Timeout:      time.Second * 15,
 	})
-	if err != nil || response.TopicErrors == nil {
-		return err
+	if response.TopicErrors == nil {
+		return nil
 	}
+	if err != nil {
+		return errors.Wrap(err, "could not create topic")
+	}
+
 	if err := response.TopicErrors[topic]; err.Err != sarama.ErrNoError {
 		return fmt.Errorf("topic error: %v", err)
 	}
@@ -84,10 +90,12 @@ func create(d *schema.ResourceData, meta interface{}) error {
 }
 
 func update(d *schema.ResourceData, meta interface{}) error {
-	c, err := client(meta)
+	client, broker, err := meta.(*clientFactory).build()
 	if err != nil {
 		return err
 	}
+	defer broker.Close()
+	defer client.Close()
 
 	topic := d.Get("name").(string)
 
@@ -100,7 +108,7 @@ func update(d *schema.ResourceData, meta interface{}) error {
 		if new.(int) < old.(int) {
 			return fmt.Errorf("new num_partitions must be >= old num_partitions")
 		}
-		response, err := c.CreatePartitions(&sarama.CreatePartitionsRequest{
+		response, err := broker.CreatePartitions(&sarama.CreatePartitionsRequest{
 			Timeout: time.Second * 15,
 			TopicPartitions: map[string]*sarama.TopicPartition{
 				topic: {
@@ -108,11 +116,14 @@ func update(d *schema.ResourceData, meta interface{}) error {
 				},
 			},
 		})
-		if err != nil || response.TopicPartitionErrors == nil {
-			return err
+		if err != nil {
+			return errors.Wrap(err, "could not create partitions")
 		}
-		if err := response.TopicPartitionErrors[topic]; err.Err != sarama.ErrNoError {
-			return fmt.Errorf("topic partition error: %v", err)
+
+		if response.TopicPartitionErrors != nil {
+			if err := response.TopicPartitionErrors[topic]; err.Err != sarama.ErrNoError {
+				return fmt.Errorf("topic partition error: %v", err)
+			}
 		}
 	}
 
@@ -126,7 +137,7 @@ func update(d *schema.ResourceData, meta interface{}) error {
 			configs[name] = &strval
 		}
 
-		response, err := c.AlterConfigs(&sarama.AlterConfigsRequest{
+		response, err := broker.AlterConfigs(&sarama.AlterConfigsRequest{
 			Resources: []*sarama.AlterConfigsResource{{
 				Type:          sarama.TopicResource,
 				Name:          topic,
@@ -134,7 +145,7 @@ func update(d *schema.ResourceData, meta interface{}) error {
 			}},
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "could not alter configs")
 		}
 		for _, resource := range response.Resources {
 			if resource.ErrorCode != int16(sarama.ErrNoError) {
@@ -151,14 +162,16 @@ func update(d *schema.ResourceData, meta interface{}) error {
 }
 
 func read(d *schema.ResourceData, meta interface{}) error {
-	c, err := client(meta)
+	client, broker, err := meta.(*clientFactory).build()
 	if err != nil {
 		return err
 	}
+	defer broker.Close()
+	defer client.Close()
 
-	metadata, err := c.GetMetadata(&sarama.MetadataRequest{Topics: []string{d.Get("name").(string)}})
+	metadata, err := broker.GetMetadata(&sarama.MetadataRequest{Topics: []string{d.Get("name").(string)}})
 	if err != nil {
-		return err
+		return errors.Wrap(err, "could not get topic metadata")
 	}
 	if len(metadata.Topics) != 1 {
 		return fmt.Errorf("expected 1 topic in metadata")
@@ -171,7 +184,7 @@ func read(d *schema.ResourceData, meta interface{}) error {
 	d.Set("replication_factor", len(topic.Partitions[0].Replicas)) // this work?
 
 	if old, ok := d.GetOk("config_entries"); ok {
-		read, err := configs(c, topic.Name)
+		read, err := configs(broker, topic.Name)
 		if err != nil {
 			return err
 		}
@@ -188,19 +201,24 @@ func read(d *schema.ResourceData, meta interface{}) error {
 }
 
 func delete(d *schema.ResourceData, meta interface{}) error {
-	c, err := client(meta)
+	client, broker, err := meta.(*clientFactory).build()
 	if err != nil {
 		return err
 	}
+	defer broker.Close()
+	defer client.Close()
 
 	topic := d.Get("name").(string)
 
-	response, err := c.DeleteTopics(&sarama.DeleteTopicsRequest{
+	response, err := broker.DeleteTopics(&sarama.DeleteTopicsRequest{
 		Topics:  []string{topic},
 		Timeout: time.Second * 15,
 	})
-	if err != nil || response.TopicErrorCodes == nil {
-		return err
+	if response.TopicErrorCodes == nil {
+		return nil
+	}
+	if err != nil {
+		return errors.Wrap(err, "could not delete topic")
 	}
 	if errCode := response.TopicErrorCodes[topic]; errCode != sarama.ErrNoError {
 		return fmt.Errorf("topic error code: %s", errCode)
@@ -215,30 +233,6 @@ func importTopic(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceDa
 	return []*schema.ResourceData{d}, nil
 }
 
-func client(meta interface{}) (*sarama.Broker, error) {
-	client := meta.(*threadsafeClient)
-	if err := client.ensureConnected(); err != nil {
-		errors.Wrap(err, "could not ensure that the client was connected")
-	}
-
-	client.Lock()
-	defer client.Unlock()
-
-	controller, err := client.Controller()
-	if err != nil {
-		return nil, errors.Wrap(err, "could not get controller")
-	}
-	if ok, err := controller.Connected(); err != nil {
-		return nil, errors.Wrap(err, "could not check if the controller is connected")
-	} else if ok {
-		return controller, nil
-	}
-	if err = controller.Open(client.Config()); err != nil {
-		return nil, errors.Wrap(err, "could not open controller connection")
-	}
-	return controller, nil
-}
-
 func configs(c *sarama.Broker, topic string) (map[string]string, error) {
 	response, err := c.DescribeConfigs(&sarama.DescribeConfigsRequest{
 		Resources: []*sarama.ConfigResource{{
@@ -247,7 +241,7 @@ func configs(c *sarama.Broker, topic string) (map[string]string, error) {
 		}}},
 	)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "could not describe configs")
 	}
 	if len(response.Resources) != 1 {
 		return nil, fmt.Errorf("expected 1 resource in response")
