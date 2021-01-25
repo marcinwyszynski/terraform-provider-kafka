@@ -1,0 +1,42 @@
+defaults: &defaults
+  working_directory: /provider
+  docker:
+    - image: deliveroo/circleci:0.2.2
+
+version: 2
+
+jobs:
+  run_ci:
+    <<: *defaults
+
+    steps:
+      - setup_remote_docker:
+          reusable: true
+
+      - checkout
+
+      - run:
+          name: Make sure we are on HEAD
+          command: ensure_head
+
+      - run:
+          name: Build image
+          command: docker build --tag provider:latest .
+
+      - run:
+          name: Run gofmt
+          command: docker run provider:latest gofmt -l .
+
+      - run:
+          name: Run go vet
+          command: docker run provider:latest go vet
+
+      - run:
+          name: Run tests
+          command: docker run provider:latest go test -v ./...
+
+workflows:
+  version: 2
+  test_and_build:
+    jobs:
+      - run_ci
